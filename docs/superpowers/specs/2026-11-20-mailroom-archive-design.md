@@ -975,8 +975,7 @@ as views beside the archive's, so the two can be joined on `doc_id` and `entry_h
   `upload` with the simulated channel kept in the sidecar. Matters with bundles of related documents, reusing the
   corpus's bundle ideas.
 - **Content:** generated text documents from per-class templates (seeded Faker), so every
-  document has real bytes and a real SHA-256. Optional `--corpus` uses rows from
-  a public mailroom corpus dataset as templates. `--no-blobs` sends hashes only for pure
+  document has real bytes and a real SHA-256. Optional `--corpus` uses rows from  a public mailroom corpus dataset as templates. `--no-blobs` sends hashes only for pure
   metadata load.
 - **Duplicates:** injected at configured rates using the corpus vocabulary:
   `exact_duplicate`, `normalized_duplicate`, `near_duplicate`, `template_variant`,

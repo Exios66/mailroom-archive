@@ -32,7 +32,7 @@ Section numbers below (§) refer to it.
 ## Global Constraints
 
 - New code only: nothing copied from third-party repositories. The publication scan (Task 10) reads its deny-list from the untracked file `.publish-denylist` (one regex per line), so the list itself is never committed.
-- Commits are authored under the owner's GitHub profile, `Jack J Burleson // LJM <148591095+Exios66@users.noreply.github.com>`, with no trailers or footers of any kind.
+- Commits are authored under the owner's GitHub noreply identity, with no trailers or footers of any kind.
 - **Tests that need Docker run on a remote test host** named by the SSH alias in `ARCHIVE_VM_HOST` (required; never hard-coded). The host has 4 CPUs, 7.8 GB, Docker and uv. `scripts/vm.sh sync` copies the working tree to `~/mailroom-archive` there with rsync; `scripts/vm.sh run <command>` runs a command in that folder. Nothing on the host is a git remote.
 - **Other projects on the test host stay untouched.** Every Docker command is scoped to compose project `mailroom-archive` (`docker compose -p mailroom-archive ...`) or to containers named `mailroom-archive-*`. Never run `docker system prune`, `docker volume prune`, `docker image prune`, `docker network prune`, or `docker compose down` without `-p mailroom-archive`. Cleanup is `docker compose -p mailroom-archive -f ops/compose.yml down -v`.
 - Python `>=3.12`; package name `mailroom-archive`, import name `mailroom_archive`, CLI `mailroom-archive`; src layout.
@@ -740,15 +740,12 @@ git log --all --format='%an <%ae>' | sort -u
 grep -rIl -E "(AKIA|ghp_|gho_|-----BEGIN [A-Z ]*PRIVATE KEY)" --exclude-dir=.git . ; echo "secrets_exit=$?"
 ```
 
-Expected: no matches; the only author is `Jack J Burleson // LJM <148591095+Exios66@users.noreply.github.com>`; `secrets_exit=1`.
+Expected: no matches; the only author is the owner's noreply identity; `secrets_exit=1`.
 
 - [ ] **Step 2: Ask the owner to confirm going public** (show the scan output and the author identity). Do not continue without a yes.
 
 - [ ] **Step 3: Make it public**
 
-```bash
-gh repo edit Exios66/mailroom-archive --visibility public --accept-visibility-change-consequences
-gh repo view Exios66/mailroom-archive --json visibility --jq .visibility
-```
+Switch the repository to public with the GitHub CLI and read the visibility back.
 
 Expected: `PUBLIC`.

@@ -2,6 +2,7 @@
 name = "mailroom-archive"
 version = "0.1.0"
 description = "Content-hash archive and ingest service for the mailroom document pipeline"
+license = "MIT"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
