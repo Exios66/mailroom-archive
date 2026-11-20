@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+.env*
+data/
+spool/
+blobs/
+warehouse/
+sim_out/
+.superpowers/
+.DS_Store
+.publish-denylist
