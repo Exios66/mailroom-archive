@@ -1,0 +1,51 @@
+[project]
+name = "mailroom-archive"
+version = "0.1.0"
+description = "Content-hash archive and ingest service for the mailroom document pipeline"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "cassandra-driver",
+    "pydantic>=2",
+    "pydantic-settings",
+    "python-multipart",
+    "xxhash",
+    "structlog",
+    "prometheus-client",
+    "typer",
+    "httpx",
+    "uuid6",
+]
+
+[project.scripts]
+mailroom-archive = "mailroom_archive.cli:app"
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mailroom_archive"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["tests"]
+markers = [
+    "integration: needs Cassandra (CASSANDRA_HOSTS)",
+    "fault: needs the 3-node profile and Docker",
+]
+addopts = "-m 'not integration and not fault'"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
