@@ -47,6 +47,8 @@ class ArrivalStore:
                             f"WHERE content_sha256 = ? AND month = ? LIMIT ?")
         self._link = p(f"UPDATE {keyspace}.arrivals SET doc_id = ?, linked_us = ? WHERE arrival_id = ?")
         self._get = p(f"SELECT * FROM {keyspace}.arrivals WHERE arrival_id = ?")
+        self._blob_get = p(f"SELECT content_sha256, size_bytes, mime, storage_uri, first_seen, verified_at "
+                           f"FROM {keyspace}.blobs WHERE content_sha256 = ?")
 
     async def _sightings_from(self, content_sha256: bytes, base_us: int, months: int,
                               limit: int) -> list[dict]:
@@ -83,4 +85,8 @@ class ArrivalStore:
 
     async def get(self, arrival_id: str) -> dict | None:
         rows = await run(self.s, self._get, (arrival_id,))
+        return rows[0] if rows else None
+
+    async def blob_row(self, content_sha256: bytes) -> dict | None:
+        rows = await run(self.s, self._blob_get, (content_sha256,))
         return rows[0] if rows else None

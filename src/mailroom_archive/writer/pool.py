@@ -14,6 +14,8 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
+import structlog
+
 from ..core.canonical import canonical_bytes
 from ..core.hashing import event_hash, sha256
 from ..core.ids import new_event_id
@@ -23,6 +25,8 @@ from ..store.session import StoreUnavailable
 from ..store.timeline import IdemRecord
 from .shards import feed_shard, shard_of
 from .spill import spill_payload
+
+log = structlog.get_logger()
 
 RETRY_DELAYS = (0.1, 0.4, 1.6)
 CACHE_ENTRIES = 10_000
@@ -64,6 +68,8 @@ class ShardPool:
         self.queues = [asyncio.Queue[tuple[EventIn, asyncio.Future]](queue_size) for _ in range(shards)]
         self.caches = [_HeadCache() for _ in range(shards)]
         self.tasks: list[asyncio.Task] = []
+        self.retries = 0      # exported as archive_write_retries_total
+        self.conflicts = 0    # exported as archive_conflicts_total
 
     async def start(self) -> None:
         self.tasks = [asyncio.create_task(self._worker(i), name=f"shard-{i}") for i in range(self.shards)]
@@ -146,6 +152,7 @@ class ShardPool:
                 self.caches[shard].drop(doc_id)
                 if delay is None:
                     raise
+                self.retries += 1
                 await asyncio.sleep(delay)
 
     async def _head(self, shard: int, doc_id: str) -> Head:
@@ -167,12 +174,16 @@ class ShardPool:
 
     def _to_spool(self, shard: int, ev: EventIn) -> WriteResult:
         status = "spooled" if self.spool.append(shard, ev) else "duplicate"
+        log.warning("archive_spooled", doc_id=ev.doc_id, shard=shard, source_ref=ev.source_ref, status=status)
         return WriteResult(doc_id=ev.doc_id, status=status)
 
     async def _write_direct(self, shard: int, ev: EventIn) -> WriteResult:
         mine: dict[str, IdemRecord] = {}   # the record this delivery planned, kept across retries
         result, conflicts = await self._retrying(shard, ev.doc_id, lambda: self._write_one(shard, ev, mine))
         for c in conflicts:
+            self.conflicts += 1
+            log.info("archive_conflict", doc_id=c.doc_id, shard=shard, source_ref=c.source_ref,
+                     field_path=c.payload["field_path"])
             await self._process(shard, c)
         return result
 

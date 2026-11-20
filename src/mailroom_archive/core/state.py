@@ -54,7 +54,7 @@ def _ts(us: int) -> datetime:
     return datetime.fromtimestamp(us / 1_000_000, tz=UTC)
 
 
-def _check_path(path: str) -> None:
+def check_path(path: str) -> None:
     if path in CORRECTABLE_TOP:
         return
     if path.startswith(EXTRACTED + ".") and all(path.split(".")[1:]):
@@ -168,7 +168,7 @@ def plan_state(head: Head, ev: EventIn, seq: int) -> tuple[StateUpdate, list[Eve
 
     elif ev.kind == Kind.correction:
         path = pl["field_path"]
-        _check_path(path)
+        check_path(path)
         if pl.get("origin") == "archive":
             if pl.get("release"):
                 p.overrides.pop(path, None)

@@ -62,4 +62,5 @@ async def test_write_feed(store, ks_session, ks):
     await store.write_feed(ev, shard16=3, channel="upload", doc_type=None, stage=None, sim_run_id=None)
     rows = list(ks_session.execute(f"SELECT doc_id, event_id FROM {ks}.events_by_time "
                                    "WHERE bucket = %s AND shard = 3", (store.bucket_of(ev.event_id),)))
-    assert [(r["doc_id"], r["event_id"]) for r in rows] == [("d6", ev.event_id)]
+    # the keyspace is shared across tests, so other documents may share this feed partition
+    assert [r["event_id"] for r in rows if r["doc_id"] == "d6"] == [ev.event_id]
