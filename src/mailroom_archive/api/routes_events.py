@@ -16,7 +16,7 @@ from pydantic import BaseModel, ValidationError
 from ..blobs import HashMismatch
 from ..core.kinds import WRITER_ONLY, Kind
 from ..core.models import EventIn, WriteResult
-from ..core.state import check_path
+from ..core.state import Head, check_path, plan_state
 from ..writer.pool import Backpressure
 from .auth import require_write
 
@@ -31,13 +31,39 @@ def _now_us() -> int:
     return time.time_ns() // 1000
 
 
+def _no_nan(token: str) -> None:
+    raise ValueError(f"{token} is not valid JSON")
+
+
+def _loads(data: bytes) -> Any:
+    return json.loads(data, parse_constant=_no_nan)  # NaN/Infinity could not be hashed canonically
+
+
+def _event(**fields: Any) -> EventIn:
+    try:
+        ev = EventIn(**fields)
+    except ValidationError as e:
+        raise HTTPException(422, e.errors(include_url=False, include_context=False)) from e
+    _check_payloads([ev])
+    return ev
+
+
+def _check_payloads(events: list[EventIn]) -> None:
+    """Reject, before anything is written, any payload its kind's state rule cannot apply."""
+    for i, ev in enumerate(events):
+        try:
+            plan_state(Head.empty(), ev, 1)
+        except (KeyError, ValueError, TypeError) as e:
+            raise HTTPException(422, f"event {i}: {ev.kind} payload rejected: {e!r}") from e
+
+
 def _parse_events(body: bytes, content_type: str) -> list[EventIn]:
     try:
         if "ndjson" in content_type:
-            raw = [json.loads(line) for line in body.splitlines() if line.strip()]
+            raw = [_loads(line) for line in body.splitlines() if line.strip()]
         else:
-            raw = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            raw = _loads(body)
+    except (ValueError, UnicodeDecodeError) as e:
         raise HTTPException(422, f"body is not JSON or NDJSON: {e}") from e
     if not isinstance(raw, list):
         raise HTTPException(422, "body must be a JSON array of events")
@@ -49,6 +75,7 @@ def _parse_events(body: bytes, content_type: str) -> list[EventIn]:
         raise HTTPException(422, e.errors(include_url=False, include_context=False)) from e
     if bad := [i for i, e in enumerate(events) if e.kind in WRITER_ONLY]:
         raise HTTPException(422, f"kinds {sorted(WRITER_ONLY)} are writer-only (events {bad})")
+    _check_payloads(events)
     return events
 
 
@@ -82,6 +109,11 @@ async def post_events(request: Request) -> list[WriteResult]:
         return await submit(request, _parse_events(body, request.headers.get("content-type", "")))
 
 
+def _api_ref(doc_id: str, idempotency_key: str | None) -> str:
+    # scoped by document, so one client key reused on two documents names two events
+    return f"api:{doc_id}:{idempotency_key or uuid.uuid4()}"
+
+
 class CorrectionIn(BaseModel):
     field_path: str
     new_value: Any = None
@@ -99,13 +131,17 @@ async def post_correction(
         check_path(body.field_path)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
-    payload = {"origin": "archive", **body.model_dump(exclude_none=True)}
-    ev = EventIn(
+    payload = {"origin": "archive", **body.model_dump(exclude={"corrects_seq", "new_value"})}
+    if not body.release:
+        payload["new_value"] = body.new_value  # null is a real value: it clears the field
+    if body.corrects_seq is not None:
+        payload["corrects_seq"] = body.corrects_seq
+    ev = _event(
         doc_id=doc_id,
         kind=Kind.correction,
         actor=body.reviewer,
         source="api",
-        source_ref=f"api:{idempotency_key or uuid.uuid4()}",
+        source_ref=_api_ref(doc_id, idempotency_key),
         occurred_us=_now_us(),
         payload=payload,
     )
@@ -122,12 +158,12 @@ class AnnotationIn(BaseModel):
 async def post_annotation(
     doc_id: str, body: AnnotationIn, request: Request, idempotency_key: str | None = Header(default=None)
 ) -> WriteResult:
-    ev = EventIn(
+    ev = _event(
         doc_id=doc_id,
         kind=Kind.annotation,
         actor=body.author,
         source="api",
-        source_ref=f"api:{idempotency_key or uuid.uuid4()}",
+        source_ref=_api_ref(doc_id, idempotency_key),
         occurred_us=_now_us(),
         payload=body.model_dump(),
     )

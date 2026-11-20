@@ -3,9 +3,13 @@ import asyncio
 import pytest
 from fakes import FakeStore, SlowFakeStore
 
+from mailroom_archive.core.canonical import canonical_bytes
+from mailroom_archive.core.hashing import sha256
+from mailroom_archive.core.ids import new_event_id
 from mailroom_archive.core.models import EventIn
 from mailroom_archive.store.session import StoreUnavailable
-from mailroom_archive.writer.pool import Backpressure, ShardPool
+from mailroom_archive.store.timeline import IdemRecord
+from mailroom_archive.writer.pool import Backpressure, EventRejected, IdempotencyConflict, ShardPool
 
 NO_WAIT = (0, 0, 0)
 
@@ -127,3 +131,72 @@ async def test_backpressure_when_queue_full():
         assert exc.value.retry_after > 0
     finally:
         await pool.stop()
+
+
+# --- final review fixes -------------------------------------------------------------
+
+
+async def test_non_store_failure_after_q8_does_not_overwrite_history(pool, fake_store):
+    await pool.submit_batch([ev("d", "arrived", ref="a")])
+    fake_store.fail_next("add_to_matter", exc=RuntimeError)
+    with pytest.raises(RuntimeError):
+        await pool.submit_batch([ev("d", "annotation", ref="b", matter_id="M")])
+    r = (await pool.submit_batch([ev("d", "annotation", ref="c")]))[0]
+    assert r.seq == 3
+    assert [e.source_ref for e in fake_store.timeline_sync("d")] == ["a", "b", "c"]
+
+
+async def test_reused_idempotency_ref_on_another_doc_is_rejected(pool, fake_store):
+    await pool.submit_batch([ev("a", "annotation", ref="K")])
+    with pytest.raises(IdempotencyConflict):
+        await pool.submit_batch([ev("b", "annotation", ref="K")])
+    with pytest.raises(IdempotencyConflict):
+        await pool.submit_batch([ev("a", "annotation", {"note": "different"}, ref="K")])
+    assert fake_store.timeline_sync("b") == []
+
+
+async def test_conflict_written_when_redelivery_finishes_the_write(pool, fake_store):
+    corr = {"origin": "archive", "field_path": "doc_type", "new_value": "x", "reason": "r", "reviewer": "jb"}
+    await pool.submit_batch([ev("d", "correction", corr, ref="c1")])
+    fake_store.fail_next("write_event", times=4)
+    with pytest.raises(StoreUnavailable):
+        await pool.submit_batch(
+            [ev("d", "stage_changed", {"to_stage": "archived", "doc_type": "y"}, ref="s1")]
+        )
+    r = (
+        await pool.submit_batch(
+            [ev("d", "stage_changed", {"to_stage": "archived", "doc_type": "y"}, ref="s1")]
+        )
+    )[0]
+    assert r.status == "duplicate" and r.seq == 2
+    assert [e.kind for e in fake_store.timeline_sync("d")] == ["correction", "stage_changed", "conflict"]
+
+
+async def test_failure_after_q8_resumes_feed_and_matter(pool, fake_store):
+    fake_store.fail_next("write_feed")
+    r = (await pool.submit_batch([ev("d", "arrived", ref="a", matter_id="M")]))[0]
+    assert r.status == "written" and r.seq == 1
+    assert [m["doc_id"] for m in fake_store.matters["M"]] == ["d"]
+    assert [e.seq for _, e in fake_store.feed] == [1]
+
+
+async def test_orphaned_idempotency_row_is_resequenced(pool, fake_store):
+    stale = IdemRecord(
+        doc_id="d",
+        seq=1,
+        event_hash=b"\x01" * 32,
+        event_id=new_event_id(),
+        payload_sha256=sha256(canonical_bytes({})),
+        prev_hash=b"",
+    )
+    fake_store.idem[("s", "x")] = stale  # idempotency row landed, its Q8 never did
+    await pool.submit_batch([ev("d", "annotation", ref="other")])  # seq 1 taken by another event
+    r = (await pool.submit_batch([ev("d", "annotation", ref="x")]))[0]
+    assert r.status == "written" and r.seq == 2
+    assert [e.source_ref for e in fake_store.timeline_sync("d")] == ["other", "x"]
+
+
+async def test_malformed_payload_rejected_before_any_write(pool, fake_store):
+    with pytest.raises(EventRejected):
+        await pool.submit_batch([ev("d", "stage_changed", {"doc_type": "x"}, ref="bad")])
+    assert fake_store.idem == {} and fake_store.timeline_sync("d") == []

@@ -17,7 +17,7 @@ from ..spool import Spool
 from ..store.arrivals import ArrivalStore
 from ..store.session import StoreUnavailable, connect, quorum_probe
 from ..store.timeline import TimelineStore
-from ..writer.pool import ShardPool
+from ..writer.pool import EventRejected, IdempotencyConflict, ShardPool
 from . import routes_events, routes_read
 from .auth import require_read
 from .metrics import Metrics
@@ -78,6 +78,14 @@ def create_app(settings: Settings, *, deps: Deps | None = None) -> FastAPI:
     app.state.settings, app.state.deps = settings, deps
     app.state.metrics = Metrics(deps) if deps is not None else None
     app.include_router(routes_events.router)
+
+    @app.exception_handler(IdempotencyConflict)
+    async def idempotency_conflict(request: Request, exc: IdempotencyConflict) -> Response:
+        return Response(json.dumps({"detail": str(exc)}), status_code=409, media_type="application/json")
+
+    @app.exception_handler(EventRejected)
+    async def event_rejected(request: Request, exc: EventRejected) -> Response:
+        return Response(json.dumps({"detail": str(exc)}), status_code=422, media_type="application/json")
 
     @app.exception_handler(StoreUnavailable)
     async def store_unavailable(request: Request, exc: StoreUnavailable) -> Response:

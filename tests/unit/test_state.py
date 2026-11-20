@@ -65,7 +65,7 @@ def test_pipeline_disagreeing_with_override_keeps_archive_value_and_emits_confli
         "pipeline_value": "contract",
         "pipeline_source_ref": "documents:d:9",
     }
-    assert extra[0].source == "writer" and extra[0].source_ref == "conflict:documents:d:9:doc_type"
+    assert extra[0].source == "writer" and extra[0].source_ref == "conflict:s:documents:d:9:doc_type"
 
 
 def test_pipeline_agreeing_with_override_is_not_a_conflict():

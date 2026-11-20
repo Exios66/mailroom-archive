@@ -30,6 +30,16 @@ CREATE TABLE IF NOT EXISTS spooled (
     UNIQUE (source, source_ref)
 );
 CREATE INDEX IF NOT EXISTS spooled_by_shard ON spooled (shard, id);
+CREATE TABLE IF NOT EXISTS dead_letters (
+    id          INTEGER PRIMARY KEY,
+    shard       INT  NOT NULL,
+    source      TEXT NOT NULL,
+    source_ref  TEXT NOT NULL,
+    event_json  TEXT NOT NULL,
+    spooled_us  INT  NOT NULL,
+    error       TEXT NOT NULL,
+    failed_us   INT  NOT NULL
+);
 """
 
 
@@ -81,6 +91,22 @@ class Spool:
     def ack(self, ids: list[int]) -> None:
         if ids:
             self.db.executemany("DELETE FROM spooled WHERE id = ?", [(i,) for i in ids])
+
+    def dead_letter(self, spool_id: int, error: str) -> None:
+        """Move an event that can never be written out of the drain path, keeping it for inspection."""
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute(
+                "INSERT INTO dead_letters "
+                "(id, shard, source, source_ref, event_json, spooled_us, error, failed_us) "
+                "SELECT id, shard, source, source_ref, event_json, spooled_us, ?, ? "
+                "FROM spooled WHERE id = ?",
+                (error, time.time_ns() // 1000, spool_id),
+            )
+            self.db.execute("DELETE FROM spooled WHERE id = ?", (spool_id,))
+
+    def dead_letters(self) -> int:
+        return self.db.execute("SELECT count(*) FROM dead_letters").fetchone()[0]
 
     def stats(self) -> SpoolStats:
         n, oldest = self.db.execute("SELECT count(*), min(spooled_us) FROM spooled").fetchone()

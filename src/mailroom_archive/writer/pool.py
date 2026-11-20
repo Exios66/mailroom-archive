@@ -12,6 +12,7 @@ import asyncio
 import json
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import structlog
@@ -20,7 +21,7 @@ from ..core.canonical import canonical_bytes
 from ..core.hashing import event_hash, sha256
 from ..core.ids import new_event_id
 from ..core.models import EventIn, StoredEvent, WriteResult
-from ..core.state import Head, plan_state
+from ..core.state import Head, StateUpdate, plan_state
 from ..store.session import StoreUnavailable
 from ..store.timeline import IdemRecord
 from .shards import feed_shard, shard_of
@@ -30,6 +31,21 @@ log = structlog.get_logger()
 
 RETRY_DELAYS = (0.1, 0.4, 1.6)
 CACHE_ENTRIES = 10_000
+
+
+class EventRejected(ValueError):
+    """The event can never be written as sent (malformed payload for its kind)."""
+
+
+class IdempotencyConflict(ValueError):
+    """A (source, source_ref) already names a different event."""
+
+
+@dataclass(frozen=True)
+class _Plan:
+    stored: StoredEvent
+    upd: StateUpdate
+    conflicts: list[EventIn]
 
 
 class Backpressure(Exception):
@@ -102,12 +118,17 @@ class ShardPool:
     async def _drainer(self) -> None:
         while True:
             await asyncio.sleep(self.drain_interval)
-            if self.health is not None and not await self.health():
-                continue
-            for shard in sorted(self.spool.pending_shards()):
-                async with self.locks[shard]:
-                    if not await self._drain_shard(shard):
-                        break
+            try:
+                if self.health is not None and not await self.health():
+                    continue
+                for shard in sorted(self.spool.pending_shards()):
+                    async with self.locks[shard]:
+                        if not await self._drain_shard(shard):
+                            break
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # the drainer must outlive any single bad pass
+                log.exception("archive_drain_failed")
 
     async def _drain_shard(self, shard: int) -> bool:
         """Replay one shard's spool oldest first; False if Cassandra failed again."""
@@ -117,6 +138,16 @@ class ShardPool:
                     await self._write_direct(shard, ev)
                 except StoreUnavailable:
                     return False
+                except Exception as e:  # can never succeed: park it, keep draining
+                    self.spool.dead_letter(spool_id, repr(e))
+                    log.error(
+                        "archive_spool_dead_letter",
+                        doc_id=ev.doc_id,
+                        shard=shard,
+                        source_ref=ev.source_ref,
+                        error=repr(e),
+                    )
+                    continue
                 self.spool.ack([spool_id])
         return True
 
@@ -157,9 +188,10 @@ class ShardPool:
         for delay in (*self.retry_delays, None):
             try:
                 return await step()
-            except StoreUnavailable:
+            except BaseException as e:
+                # any failure may leave Q8 landed while the cache says otherwise: forget the head
                 self.caches[shard].drop(doc_id)
-                if delay is None:
+                if not isinstance(e, StoreUnavailable) or delay is None:
                     raise
                 self.retries += 1
                 await asyncio.sleep(delay)
@@ -187,7 +219,7 @@ class ShardPool:
         return WriteResult(doc_id=ev.doc_id, status=status)
 
     async def _write_direct(self, shard: int, ev: EventIn) -> WriteResult:
-        mine: dict[str, IdemRecord] = {}  # the record this delivery planned, kept across retries
+        mine: dict[str, Any] = {}  # what this delivery planned, kept across retries
         result, conflicts = await self._retrying(shard, ev.doc_id, lambda: self._write_one(shard, ev, mine))
         for c in conflicts:
             self.conflicts += 1
@@ -202,24 +234,32 @@ class ShardPool:
         return result
 
     async def _write_one(
-        self, shard: int, ev: EventIn, mine: dict[str, IdemRecord]
+        self, shard: int, ev: EventIn, mine: dict[str, Any]
     ) -> tuple[WriteResult, list[EventIn]]:
         head = await self._head(shard, ev.doc_id)
         body = canonical_bytes(ev.payload)
+        psha = sha256(body)
         rec = await self.store.get_idem(ev.source, ev.source_ref)
         if rec is not None:
-            own = rec == mine.get("rec")  # our own earlier attempt, not an earlier delivery
-            conflicts: list[EventIn] = []
+            if rec.doc_id != ev.doc_id or rec.payload_sha256 != psha:
+                raise IdempotencyConflict(
+                    f"{ev.source}/{ev.source_ref} was already used for a different event "
+                    f"(doc {rec.doc_id}, seq {rec.seq})"
+                )
+            own = mine.get("rec") == rec  # our own earlier attempt, not an earlier delivery
+            status = "written" if own else "duplicate"
+            done = WriteResult(doc_id=ev.doc_id, status=status, seq=rec.seq, event_hash=rec.event_hash.hex())
             if rec.seq == head.seq + 1:  # idempotency row landed, Q8 did not: finish it
-                conflicts = await self._apply(shard, ev, head, body, rec, want_conflicts=True)
-            return WriteResult(
-                doc_id=ev.doc_id,
-                status="written" if own else "duplicate",
-                seq=rec.seq,
-                event_hash=rec.event_hash.hex(),
-            ), conflicts if own else []
+                plan = mine["plan"] if own else self._plan(head, ev, body, rec)
+                await self._apply(shard, ev, head, plan)
+                return done, plan.conflicts
+            if rec.seq <= head.seq and await self._landed(ev.doc_id, rec):
+                if own:  # Q8 landed but a later step failed: resume from there
+                    await self._after_q8(shard, ev, mine["head"], mine["plan"])
+                    return done, mine["plan"].conflicts
+                return done, []
+            # otherwise the row is orphaned (its Q8 never landed and the seq is taken): sequence afresh
         seq = head.seq + 1
-        psha = sha256(body)
         h = event_hash(
             doc_id=ev.doc_id,
             seq=seq,
@@ -239,15 +279,24 @@ class ShardPool:
             payload_sha256=psha,
             prev_hash=head.hash,
         )
+        plan = self._plan(head, ev, body, rec)  # pure: a malformed payload fails before anything is written
+        mine.update(rec=rec, plan=plan, head=head)
         await self.store.put_idem(ev.source, ev.source_ref, rec)
-        mine["rec"] = rec
-        conflicts = await self._apply(shard, ev, head, body, rec, want_conflicts=True)
-        return WriteResult(doc_id=ev.doc_id, status="written", seq=seq, event_hash=h.hex()), conflicts
+        await self._apply(shard, ev, head, plan)
+        return WriteResult(doc_id=ev.doc_id, status="written", seq=seq, event_hash=h.hex()), plan.conflicts
 
-    async def _apply(
-        self, shard: int, ev: EventIn, head: Head, body: bytes, rec: IdemRecord, want_conflicts: bool = False
-    ):
-        upd, conflicts = plan_state(head, ev, rec.seq)
+    async def _landed(self, doc_id: str, rec: IdemRecord) -> bool:
+        rows = await self.store.timeline(doc_id, after_seq=rec.seq - 1, limit=1)
+        return bool(rows) and rows[0].seq == rec.seq and rows[0].event_hash == rec.event_hash
+
+    def _plan(self, head: Head, ev: EventIn, body: bytes, rec: IdemRecord) -> _Plan:
+        try:
+            upd, conflicts = plan_state(head, ev, rec.seq)
+            corrects = ev.payload.get("corrects_seq")
+            if corrects is not None and not isinstance(corrects, int):
+                raise ValueError("corrects_seq must be an integer")
+        except (KeyError, ValueError, TypeError) as e:
+            raise EventRejected(f"{ev.kind} payload rejected: {e!r}") from e
         payload, ref = spill_payload(body, self.blobs)
         stored = StoredEvent(
             doc_id=ev.doc_id,
@@ -263,10 +312,17 @@ class ShardPool:
             payload_sha256=rec.payload_sha256,
             prev_hash=rec.prev_hash,
             event_hash=rec.event_hash,
-            corrects_seq=ev.payload.get("corrects_seq"),
+            corrects_seq=corrects,
         )
-        await self.store.write_event(stored, upd)
-        f = upd.fields
+        return _Plan(stored=stored, upd=upd, conflicts=conflicts)
+
+    async def _apply(self, shard: int, ev: EventIn, head: Head, plan: _Plan) -> None:
+        await self.store.write_event(plan.stored, plan.upd)  # Q8
+        await self._after_q8(shard, ev, head, plan)
+
+    async def _after_q8(self, shard: int, ev: EventIn, head: Head, plan: _Plan) -> None:
+        """Feed row, matter index, cache. All idempotent upserts, so a retry may repeat them."""
+        f, stored = plan.upd.fields, plan.stored
 
         def now(name: str):
             return f.get(name, getattr(head, name))
@@ -284,12 +340,11 @@ class ShardPool:
                 f["matter_id"], ev.occurred_us, ev.doc_id, now("doc_type"), now("content_sha256")
             )
         new_head = head.replace(
-            seq=rec.seq, hash=rec.event_hash, **{k: v for k, v in f.items() if k in _HEAD_FIELDS}
+            seq=stored.seq, hash=stored.event_hash, **{k: v for k, v in f.items() if k in _HEAD_FIELDS}
         )
         if "extracted_data" in f:
             new_head = new_head.replace(extracted_data=json.loads(f["extracted_data"]))
         self.caches[shard].put(ev.doc_id, new_head)
-        return conflicts if want_conflicts else new_head
 
 
 _HEAD_FIELDS = frozenset(

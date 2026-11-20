@@ -21,6 +21,7 @@ class FakeStore:
         self.feed: list[tuple[int, StoredEvent]] = []
         self.matters: dict[str, list[dict]] = defaultdict(list)
         self._fail: dict[str, int] = {}
+        self._exc: dict[str, type[Exception]] = {}
         self._writes_left: int | None = None
         self._down = False
 
@@ -31,15 +32,16 @@ class FakeStore:
     def recover(self) -> None:
         self._writes_left, self._down = None, False
 
-    def fail_next(self, method: str, times: int = 1) -> None:
+    def fail_next(self, method: str, times: int = 1, exc: type[Exception] = StoreUnavailable) -> None:
         self._fail[method] = times
+        self._exc[method] = exc
 
     def _maybe_fail(self, method: str) -> None:
         if self._down:
             raise StoreUnavailable("store down")
         if self._fail.get(method, 0) > 0:
             self._fail[method] -= 1
-            raise StoreUnavailable(f"injected failure in {method}")
+            raise self._exc.get(method, StoreUnavailable)(f"injected failure in {method}")
 
     def timeline_sync(self, doc_id: str) -> list[StoredEvent]:
         return [self.rows[doc_id][s] for s in sorted(self.rows[doc_id])]
@@ -94,6 +96,7 @@ class FakeStore:
         self.feed.append((shard16, ev))
 
     async def add_to_matter(self, matter_id, created_us, doc_id, doc_type, content_sha256) -> None:
+        self._maybe_fail("add_to_matter")
         self.matters[matter_id].append({"doc_id": doc_id, "doc_type": doc_type})
 
     async def matter_docs(self, matter_id: str, year: int, limit: int = 500) -> list[dict]:

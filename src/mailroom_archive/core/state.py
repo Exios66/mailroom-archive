@@ -113,7 +113,7 @@ class _Planner:
                     kind=Kind.conflict,
                     actor="archive",
                     source="writer",
-                    source_ref=f"conflict:{self.ev.source_ref}:{path}",
+                    source_ref=f"conflict:{self.ev.source}:{self.ev.source_ref}:{path}",
                     occurred_us=self.ev.occurred_us,
                     payload={
                         "field_path": path,

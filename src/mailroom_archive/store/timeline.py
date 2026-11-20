@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from cassandra.cluster import Session
-from cassandra.query import BatchStatement, BatchType, PreparedStatement
+from cassandra.query import UNSET_VALUE, BatchStatement, BatchType
 
 from ..core.ids import event_id_us
 from ..core.models import StoredEvent
@@ -33,6 +33,8 @@ STATE_COLUMNS = frozenset(
         "sim_run_id",
     }
 )
+
+_STATE_ORDER = tuple(sorted(STATE_COLUMNS))
 
 _EVENT_COLS = (
     "doc_id",
@@ -112,7 +114,10 @@ class TimelineStore:
             f"SELECT created_at, doc_id, doc_type FROM {keyspace}.docs_by_matter "
             f"WHERE matter_id = ? AND year = ? LIMIT ?"
         )
-        self._updates: dict[tuple[str, ...], PreparedStatement] = {}
+        # one Q8 UPDATE for every event: columns an event leaves alone are bound UNSET (protocol v5),
+        # so nothing is prepared on the hot path and an outage cannot surface from prepare()
+        sets = ", ".join(f"{c} = ?" for c in (*_STATE_ORDER, "head_seq", "head_hash"))
+        self._update = p(f"UPDATE {keyspace}.doc_timeline SET {sets} WHERE doc_id = ?")
 
     # Q1
     async def get_head(self, doc_id: str) -> Head:
@@ -136,24 +141,15 @@ class TimelineStore:
             audit_entry_hash=r["audit_entry_hash"],
         )
 
-    def _update_stmt(self, names: tuple[str, ...]) -> PreparedStatement:
-        if (stmt := self._updates.get(names)) is None:
-            sets = ", ".join(f"{n} = ?" for n in (*names, "head_seq", "head_hash"))
-            stmt = self.s.prepare(f"UPDATE {self.ks}.doc_timeline SET {sets} WHERE doc_id = ?")
-            self._updates[names] = stmt
-        return stmt
-
     # Q8: history row + current state in one single-partition batch (atomic and isolated)
     async def write_event(self, ev: StoredEvent, upd: StateUpdate) -> None:
         unknown = set(upd.fields) - STATE_COLUMNS
         if unknown:
             raise ValueError(f"not a state column: {sorted(unknown)}")
-        names = tuple(sorted(upd.fields))
         batch = BatchStatement(batch_type=BatchType.UNLOGGED)
         batch.add(self._insert, tuple(getattr(ev, c) if c != "kind" else str(ev.kind) for c in _EVENT_COLS))
-        batch.add(
-            self._update_stmt(names), (*(upd.fields[n] for n in names), ev.seq, ev.event_hash, ev.doc_id)
-        )
+        state = tuple(upd.fields.get(c, UNSET_VALUE) for c in _STATE_ORDER)
+        batch.add(self._update, (*state, ev.seq, ev.event_hash, ev.doc_id))
         await run(self.s, batch)
 
     # Q2 / Q3

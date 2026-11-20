@@ -94,3 +94,18 @@ async def test_other_shards_keep_writing_directly(tmp_path):
         assert (await pool.submit_batch([ev(other, ref="y")]))[0].status == "written"
     finally:
         await pool.stop()
+
+
+async def test_malformed_spooled_event_is_dead_lettered_and_drain_continues(tmp_path):
+    store, healthy = FakeStore(), {"v": True}
+    pool = make_pool(tmp_path, store, healthy)
+    shard = pool.shard("d")
+    pool.spool.append(shard, ev("d", kind="stage_changed", ref="bad"))  # no to_stage
+    pool.spool.append(shard, ev("d", ref="good"))
+    await pool.start()
+    try:
+        await pool.wait_drained(timeout=5)
+        assert [e.source_ref for e in store.timeline_sync("d")] == ["good"]
+        assert pool.spool.dead_letters() == 1
+    finally:
+        await pool.stop()

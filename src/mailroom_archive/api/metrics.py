@@ -36,6 +36,11 @@ class _PoolCollector(Collector):
         yield GaugeMetricFamily(
             "archive_spool_events", "Events waiting in the spool", value=stats.events if stats else 0
         )
+        yield GaugeMetricFamily(
+            "archive_spool_dead_letters",
+            "Spooled events that can never be written",
+            value=spool.dead_letters() if spool is not None else 0,
+        )
         oldest = (time.time() - stats.oldest_us / 1e6) if stats and stats.oldest_us else 0
         yield GaugeMetricFamily(
             "archive_spool_oldest_seconds", "Age of the oldest spooled event", value=oldest

@@ -5,12 +5,28 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from cassandra import ConsistencyLevel, OperationTimedOut, ReadTimeout, Unavailable, WriteTimeout
+from cassandra import (
+    ConsistencyLevel,
+    CoordinationFailure,
+    OperationTimedOut,
+    ReadTimeout,
+    Unavailable,
+    WriteTimeout,
+)
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.cluster import EXEC_PROFILE_DEFAULT, Cluster, ExecutionProfile, NoHostAvailable, Session
+from cassandra.connection import ConnectionException  # noqa: E402
 from cassandra.query import dict_factory
 
-_DRIVER_OUTAGES = (NoHostAvailable, Unavailable, ReadTimeout, WriteTimeout, OperationTimedOut)
+_DRIVER_OUTAGES = (
+    NoHostAvailable,
+    Unavailable,
+    ReadTimeout,
+    WriteTimeout,
+    CoordinationFailure,  # ReadFailure, WriteFailure
+    OperationTimedOut,
+    ConnectionException,
+)
 
 
 class StoreUnavailable(Exception):

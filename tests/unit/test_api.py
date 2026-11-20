@@ -197,3 +197,51 @@ def test_store_outage_on_read_is_503(tmp_path):
     with make_client(tmp_path, ShardPool(store, None, shards=4, retry_delays=(0, 0, 0))) as c:
         r = c.get("/v1/docs/d", headers=auth("read"))
     assert r.status_code == 503 and r.headers["retry-after"] == "5"
+
+
+def test_correction_with_null_value_is_kept(client):
+    body = {"field_path": "doc_subclass", "new_value": None, "reason": "r", "reviewer": "jb"}
+    r = client.post("/v1/docs/d/corrections", json=body, headers=auth("write"))
+    assert r.status_code == 200 and r.json()["status"] == "written"
+    tl = client.get("/v1/docs/d/timeline", headers=auth("read")).json()
+    assert "new_value" in tl[0]["payload"] and tl[0]["payload"]["new_value"] is None
+
+
+def test_bad_payloads_rejected_with_422(client):
+    w = {**auth("write"), "content-type": "application/json"}
+    assert (
+        client.post(
+            "/v1/events",
+            content='[{"doc_id":"d","kind":"annotation","actor":"a","source":"s",'
+            '"source_ref":"r","occurred_us":1,"payload":{"x":NaN}}]',
+            headers=w,
+        ).status_code
+        == 422
+    )
+    ns = evj("d")
+    ns["occurred_us"] = 1_763_650_000_000_000_000
+    assert client.post("/v1/events", json=[ns], headers=w).status_code == 422
+    assert (
+        client.post("/v1/events", json=[evj("d", "stage_changed", {"doc_type": "x"})], headers=w).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/v1/docs/" + "x" * 200 + "/annotations", json={"note": "n", "author": "a"}, headers=w
+        ).status_code
+        == 422
+    )
+
+
+def test_idempotency_key_is_scoped_per_document(client):
+    h = {**auth("write"), "idempotency-key": "same"}
+    body = {"note": "n", "author": "a"}
+    a = client.post("/v1/docs/a/annotations", json=body, headers=h).json()
+    b = client.post("/v1/docs/b/annotations", json=body, headers=h).json()
+    assert a["status"] == b["status"] == "written"
+
+
+def test_reused_ref_on_another_doc_is_409(client):
+    w = auth("write")
+    client.post("/v1/events", json=[evj("a", ref="K")], headers=w)
+    assert client.post("/v1/events", json=[evj("b", ref="K")], headers=w).status_code == 409

@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 from .kinds import Kind
 
+MAX_US = 253_402_300_799_999_999  # 9999-12-31T23:59:59.999999Z; rejects nanoseconds
+
 
 class EventIn(BaseModel):
     doc_id: str = Field(min_length=1, max_length=128)
@@ -14,7 +16,7 @@ class EventIn(BaseModel):
     actor: str
     source: str
     source_ref: str
-    occurred_us: int = Field(ge=0)
+    occurred_us: int = Field(ge=0, le=MAX_US)
     payload: dict[str, Any]
     matter_id: str | None = None
     sim_run_id: str | None = None
