@@ -53,8 +53,7 @@ class Spool:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript(_SCHEMA)
         data_dir = os.environ.get("MAILROOM_ARCHIVE_DATA_DIR")
-        self.ephemeral = (_is_under(self.path, tempfile.gettempdir())
-                          or not _is_under(self.path, data_dir))
+        self.ephemeral = _is_under(self.path, tempfile.gettempdir()) or not _is_under(self.path, data_dir)
         if self.ephemeral:
             log.warning("archive_spool_ephemeral", path=str(self.path))
 
@@ -62,7 +61,8 @@ class Spool:
         cur = self.db.execute(
             "INSERT OR IGNORE INTO spooled (shard, source, source_ref, event_json, spooled_us) "
             "VALUES (?, ?, ?, ?, ?)",
-            (shard, ev.source, ev.source_ref, ev.model_dump_json(), time.time_ns() // 1000))
+            (shard, ev.source, ev.source_ref, ev.model_dump_json(), time.time_ns() // 1000),
+        )
         return cur.rowcount == 1
 
     def pending_shards(self) -> set[int]:
@@ -73,8 +73,9 @@ class Spool:
         return row is not None
 
     def peek(self, shard: int, limit: int = 100) -> list[tuple[int, EventIn]]:
-        rows = self.db.execute("SELECT id, event_json FROM spooled WHERE shard = ? ORDER BY id LIMIT ?",
-                               (shard, limit))
+        rows = self.db.execute(
+            "SELECT id, event_json FROM spooled WHERE shard = ? ORDER BY id LIMIT ?", (shard, limit)
+        )
         return [(i, EventIn.model_validate_json(j)) for i, j in rows]
 
     def ack(self, ids: list[int]) -> None:

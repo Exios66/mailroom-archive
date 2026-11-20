@@ -35,8 +35,9 @@ async def test_occurred_us_keeps_microseconds(store):
 
 async def test_state_fields_round_trip_into_head(store):
     ev = stored(doc_id="d3", seq=1, kind="correction")
-    await store.write_event(ev, StateUpdate({"doc_type": "contract", "overrides": {"doc_type": 1},
-                                             "extracted_data": b'{"a":1}'}))
+    await store.write_event(
+        ev, StateUpdate({"doc_type": "contract", "overrides": {"doc_type": 1}, "extracted_data": b'{"a":1}'})
+    )
     head = await store.get_head("d3")
     assert head.doc_type == "contract" and head.overrides == {"doc_type": 1}
     assert head.extracted_data == {"a": 1}
@@ -44,8 +45,14 @@ async def test_state_fields_round_trip_into_head(store):
 
 async def test_idempotency_round_trip(store):
     ev = stored(doc_id="d4", seq=1)
-    rec = IdemRecord(doc_id="d4", seq=1, event_hash=ev.event_hash, event_id=ev.event_id,
-                     payload_sha256=ev.payload_sha256, prev_hash=b"")
+    rec = IdemRecord(
+        doc_id="d4",
+        seq=1,
+        event_hash=ev.event_hash,
+        event_id=ev.event_id,
+        payload_sha256=ev.payload_sha256,
+        prev_hash=b"",
+    )
     assert await store.get_idem("s", "x:1") is None
     await store.put_idem("s", "x:1", rec)
     assert await store.get_idem("s", "x:1") == rec
@@ -60,7 +67,11 @@ async def test_matter_index(store):
 async def test_write_feed(store, ks_session, ks):
     ev = stored(doc_id="d6", seq=1)
     await store.write_feed(ev, shard16=3, channel="upload", doc_type=None, stage=None, sim_run_id=None)
-    rows = list(ks_session.execute(f"SELECT doc_id, event_id FROM {ks}.events_by_time "
-                                   "WHERE bucket = %s AND shard = 3", (store.bucket_of(ev.event_id),)))
+    rows = list(
+        ks_session.execute(
+            f"SELECT doc_id, event_id FROM {ks}.events_by_time WHERE bucket = %s AND shard = 3",
+            (store.bucket_of(ev.event_id),),
+        )
+    )
     # the keyspace is shared across tests, so other documents may share this feed partition
     assert [r["event_id"] for r in rows if r["doc_id"] == "d6"] == [ev.event_id]

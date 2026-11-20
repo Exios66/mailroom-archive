@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      fault:
+        description: Run the 3-node fault test (slow)
+        type: boolean
+        default: false
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run pytest tests/unit
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      cassandra:
+        image: cassandra:5.0
+        ports: ["9042:9042"]
+        env:
+          MAX_HEAP_SIZE: 512M
+          HEAP_NEWSIZE: 128M
+        options: >-
+          --health-cmd "cqlsh -e 'describe keyspaces'"
+          --health-interval 10s --health-timeout 10s --health-retries 30 --health-start-period 40s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run pytest tests/integration -m integration
+        env:
+          CASSANDRA_HOSTS: 127.0.0.1
+
+  fault:
+    if: github.event_name == 'workflow_dispatch' && inputs.fault
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: docker compose -p mailroom-archive -f ops/compose.yml --profile small up -d --wait
+        env:
+          ARCHIVE_ENV: small
+          ARCHIVE_MEM: 1200m
+      - run: uv run pytest tests/fault -m fault
+        env:
+          ARCHIVE_PROFILE: small
+          CASSANDRA_HOSTS: 127.0.0.1
+      - if: always()
+        run: docker compose -p mailroom-archive -f ops/compose.yml --profile full down -v

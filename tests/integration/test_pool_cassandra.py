@@ -9,8 +9,15 @@ pytestmark = pytest.mark.integration
 
 
 def ev(doc_id, kind, ref):
-    return EventIn(doc_id=doc_id, kind=kind, actor="a", source="it", source_ref=ref,
-                   occurred_us=1_763_650_000_000_000, payload={})
+    return EventIn(
+        doc_id=doc_id,
+        kind=kind,
+        actor="a",
+        source="it",
+        source_ref=ref,
+        occurred_us=1_763_650_000_000_000,
+        payload={},
+    )
 
 
 @pytest.fixture

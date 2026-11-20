@@ -8,8 +8,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from cassandra import ConsistencyLevel
-from cassandra.query import SimpleStatement
 from fastapi import Depends, FastAPI, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
@@ -17,14 +15,12 @@ from ..blobs import FsBlobStore
 from ..settings import Settings
 from ..spool import Spool
 from ..store.arrivals import ArrivalStore
-from ..store.session import StoreUnavailable, connect, run
+from ..store.session import StoreUnavailable, connect, quorum_probe
 from ..store.timeline import TimelineStore
 from ..writer.pool import ShardPool
 from . import routes_events, routes_read
 from .auth import require_read
 from .metrics import Metrics
-
-_READY = SimpleStatement("SELECT now() FROM system.local", consistency_level=ConsistencyLevel.QUORUM)
 
 
 @dataclass
@@ -42,13 +38,7 @@ def cassandra_deps(settings: Settings) -> Deps:
         settings.cassandra_hosts, username=settings.cassandra_username, password=settings.cassandra_password
     )
 
-    async def ready() -> bool:
-        try:
-            await run(session, _READY)
-            return True
-        except StoreUnavailable:
-            return False
-
+    ready = quorum_probe(session, settings.keyspace)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     blobs = FsBlobStore(settings.blob_dir)
     store = TimelineStore(session, settings.keyspace)
@@ -88,6 +78,16 @@ def create_app(settings: Settings, *, deps: Deps | None = None) -> FastAPI:
     app.state.settings, app.state.deps = settings, deps
     app.state.metrics = Metrics(deps) if deps is not None else None
     app.include_router(routes_events.router)
+
+    @app.exception_handler(StoreUnavailable)
+    async def store_unavailable(request: Request, exc: StoreUnavailable) -> Response:
+        return Response(
+            json.dumps({"detail": "store unavailable"}),
+            status_code=503,
+            headers={"Retry-After": "5"},
+            media_type="application/json",
+        )
+
     app.include_router(routes_read.router)
 
     @app.get("/healthz")

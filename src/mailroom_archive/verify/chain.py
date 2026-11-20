@@ -37,26 +37,51 @@ def _payload(ev: StoredEvent, blobs: Any | None) -> bytes | None:
 
 def verify_events(doc_id: str, events: list[StoredEvent], blobs: Any | None) -> VerifyReport:
     if not events:
-        return VerifyReport(doc_id=doc_id, ok=False, events=0,
-                            checks=[Check(name="seq_contiguous", ok=False, detail="no events")])
+        return VerifyReport(
+            doc_id=doc_id,
+            ok=False,
+            events=0,
+            checks=[Check(name="seq_contiguous", ok=False, detail="no events")],
+        )
     failed: list[Check] = []
     prev_seq, prev_hash = 0, b""
     for ev in sorted(events, key=lambda e: e.seq):
         if ev.seq != prev_seq + 1:
-            failed.append(Check(name="seq_contiguous", ok=False, seq=ev.seq,
-                                detail=f"expected seq {prev_seq + 1}"))
+            failed.append(
+                Check(name="seq_contiguous", ok=False, seq=ev.seq, detail=f"expected seq {prev_seq + 1}")
+            )
         if ev.prev_hash != prev_hash:
-            failed.append(Check(name="prev_link", ok=False, seq=ev.seq,
-                                detail="prev_hash does not match the previous event_hash"))
+            failed.append(
+                Check(
+                    name="prev_link",
+                    ok=False,
+                    seq=ev.seq,
+                    detail="prev_hash does not match the previous event_hash",
+                )
+            )
         body = _payload(ev, blobs)
         if body is None:
-            failed.append(Check(name="payload_available", ok=False, seq=ev.seq,
-                                detail=f"spilled payload {ev.payload_ref} not in the blob store"))
+            failed.append(
+                Check(
+                    name="payload_available",
+                    ok=False,
+                    seq=ev.seq,
+                    detail=f"spilled payload {ev.payload_ref} not in the blob store",
+                )
+            )
         elif sha256(body) != ev.payload_sha256:
             failed.append(Check(name="payload_hash", ok=False, seq=ev.seq))
-        recomputed = event_hash(doc_id=doc_id, seq=ev.seq, kind=str(ev.kind), occurred_us=ev.occurred_us,
-                                actor=ev.actor, source=ev.source, source_ref=ev.source_ref,
-                                payload_sha256=ev.payload_sha256, prev_hash=ev.prev_hash)
+        recomputed = event_hash(
+            doc_id=doc_id,
+            seq=ev.seq,
+            kind=str(ev.kind),
+            occurred_us=ev.occurred_us,
+            actor=ev.actor,
+            source=ev.source,
+            source_ref=ev.source_ref,
+            payload_sha256=ev.payload_sha256,
+            prev_hash=ev.prev_hash,
+        )
         if recomputed != ev.event_hash:
             failed.append(Check(name="event_hash", ok=False, seq=ev.seq))
         prev_seq, prev_hash = ev.seq, ev.event_hash

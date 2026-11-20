@@ -43,9 +43,16 @@ def arrivals(ks_session, ks, tmp_path):
 
 
 async def record(arrivals, content, arrived_us, channel="upload"):
-    return await arrivals.record(content=content, content_sha256=sha256(content), size_bytes=len(content),
-                                 mime="text/plain", channel=channel, original_filename="a.txt",
-                                 intake_meta={"upload_id": "u1"}, arrived_us=arrived_us)
+    return await arrivals.record(
+        content=content,
+        content_sha256=sha256(content),
+        size_bytes=len(content),
+        mime="text/plain",
+        channel=channel,
+        original_filename="a.txt",
+        intake_meta={"upload_id": "u1"},
+        arrived_us=arrived_us,
+    )
 
 
 async def test_second_identical_arrival_is_duplicate(arrivals, clock):
@@ -81,6 +88,7 @@ async def test_link_sets_doc_id(arrivals, clock):
 async def test_blob_row_and_bytes_written(arrivals, clock, ks_session, ks):
     x = secrets.token_bytes(16)
     await record(arrivals, x, clock.us())
-    row = ks_session.execute(f"SELECT size_bytes, storage_uri FROM {ks}.blobs WHERE content_sha256 = %s",
-                             (sha256(x),)).one()
+    row = ks_session.execute(
+        f"SELECT size_bytes, storage_uri FROM {ks}.blobs WHERE content_sha256 = %s", (sha256(x),)
+    ).one()
     assert row["size_bytes"] == 16 and arrivals.blobs.get(sha256(x)) == x

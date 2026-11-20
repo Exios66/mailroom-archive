@@ -18,11 +18,13 @@ class StoreUnavailable(Exception):
 
 
 def connect(hosts: list[str], *, username: str | None = None, password: str | None = None) -> Session:
-    profile = ExecutionProfile(consistency_level=ConsistencyLevel.QUORUM, row_factory=dict_factory,
-                               request_timeout=10)
+    profile = ExecutionProfile(
+        consistency_level=ConsistencyLevel.QUORUM, row_factory=dict_factory, request_timeout=10
+    )
     auth = PlainTextAuthProvider(username, password) if username else None
-    cluster = Cluster(hosts, protocol_version=5, auth_provider=auth,
-                      execution_profiles={EXEC_PROFILE_DEFAULT: profile})
+    cluster = Cluster(
+        hosts, protocol_version=5, auth_provider=auth, execution_profiles={EXEC_PROFILE_DEFAULT: profile}
+    )
     try:
         return cluster.connect()
     except _DRIVER_OUTAGES as e:
@@ -42,20 +44,45 @@ async def run(session: Session, stmt: Any, params: tuple | dict = ()) -> list[di
 
     def ok(page: list[dict] | None) -> None:
         try:
-            rows.extend(page or ())   # writes return no rows
+            rows.extend(page or ())  # writes return no rows
             if rf.has_more_pages:
                 rf.start_fetching_next_page()
                 return
         except Exception as e:  # never leave the awaiting coroutine hanging
             err(e)
             return
-        loop.call_soon_threadsafe(lambda: done.done() or done.set_result(rows))
+        _deliver(lambda: done.done() or done.set_result(rows))
 
     def err(exc: BaseException) -> None:
-        loop.call_soon_threadsafe(lambda: done.done() or done.set_exception(exc))
+        _deliver(lambda: done.done() or done.set_exception(exc))
+
+    def _deliver(fn) -> None:
+        try:
+            loop.call_soon_threadsafe(fn)
+        except RuntimeError:  # loop already closed (shutdown); nobody is waiting
+            pass
 
     rf.add_callbacks(ok, err)
     try:
         return await done
     except _DRIVER_OUTAGES as e:
         raise StoreUnavailable(str(e)) from e
+
+
+def quorum_probe(session: Session, keyspace: str):
+    """Readiness: a QUORUM range read on the keyspace. system.local is node-local, so it
+    would answer even with every other replica down."""
+    from cassandra.query import SimpleStatement
+
+    stmt = SimpleStatement(
+        f"SELECT name FROM {keyspace}.cursors LIMIT 1", consistency_level=ConsistencyLevel.QUORUM
+    )
+
+    async def ready() -> bool:
+        try:
+            await run(session, stmt)
+            return True
+        except StoreUnavailable:
+            return False
+
+    return ready

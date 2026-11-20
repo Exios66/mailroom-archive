@@ -3,8 +3,15 @@ from mailroom_archive.spool import Spool
 
 
 def ev(doc_id, kind="annotation", ref="r"):
-    return EventIn(doc_id=doc_id, kind=kind, actor="a", source="s", source_ref=ref,
-                   occurred_us=1_763_650_000_000_000, payload={"note": "Société — §12"})
+    return EventIn(
+        doc_id=doc_id,
+        kind=kind,
+        actor="a",
+        source="s",
+        source_ref=ref,
+        occurred_us=1_763_650_000_000_000,
+        payload={"note": "Société — §12"},
+    )
 
 
 def test_append_dedups_and_orders(tmp_path):

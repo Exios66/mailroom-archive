@@ -10,13 +10,26 @@ NO_WAIT = (0, 0, 0)
 
 
 def ev(doc_id, kind="annotation", ref="r"):
-    return EventIn(doc_id=doc_id, kind=kind, actor="a", source="s", source_ref=ref,
-                   occurred_us=1_763_650_000_000_000, payload={})
+    return EventIn(
+        doc_id=doc_id,
+        kind=kind,
+        actor="a",
+        source="s",
+        source_ref=ref,
+        occurred_us=1_763_650_000_000_000,
+        payload={},
+    )
 
 
 def make_pool(tmp_path, store, healthy):
-    return ShardPool(store, Spool(tmp_path / "s.db"), shards=4, retry_delays=NO_WAIT,
-                     health=lambda: asyncio.sleep(0, healthy["v"]), drain_interval=0.05)
+    return ShardPool(
+        store,
+        Spool(tmp_path / "s.db"),
+        shards=4,
+        retry_delays=NO_WAIT,
+        health=lambda: asyncio.sleep(0, healthy["v"]),
+        drain_interval=0.05,
+    )
 
 
 async def test_outage_mid_batch_spools_rest_and_drains_in_order(tmp_path):
@@ -45,9 +58,9 @@ async def test_new_events_follow_spooled_ones(tmp_path):
     try:
         store.fail_after_writes(3)
         await pool.submit_batch([ev("d", ref=f"r{i}") for i in range(10)])
-        store.recover()                               # store works again, drainer not yet released
+        store.recover()  # store works again, drainer not yet released
         late = (await pool.submit_batch([ev("d", ref="late")]))[0]
-        assert late.status == "spooled"               # shard still has spooled events
+        assert late.status == "spooled"  # shard still has spooled events
         healthy["v"] = True
         await pool.wait_drained(timeout=10)
         tl = store.timeline_sync("d")

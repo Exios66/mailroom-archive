@@ -31,8 +31,20 @@ def test_negative_time_rejected():
 
 def test_kinds_closed_set_and_client_subset():
     assert {k.value for k in Kind} == {
-        "arrived", "stage_changed", "node_visit", "trace_io", "audit_row", "audit_attempt",
-        "audit_addendum", "pending_row", "correction", "conflict", "annotation", "relation", "retention"}
+        "arrived",
+        "stage_changed",
+        "node_visit",
+        "trace_io",
+        "audit_row",
+        "audit_attempt",
+        "audit_addendum",
+        "pending_row",
+        "correction",
+        "conflict",
+        "annotation",
+        "relation",
+        "retention",
+    }
     assert Kind.conflict not in CLIENT_KINDS and Kind.retention not in CLIENT_KINDS
     assert len(CLIENT_KINDS) == 11
 

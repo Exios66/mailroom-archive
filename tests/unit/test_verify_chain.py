@@ -29,8 +29,13 @@ def blob_path(root, payload_ref):
 def test_clean_chain_passes():
     rep = verify_events("d", chain(5), None)
     assert rep.ok and rep.events == 5
-    assert {c.name for c in rep.checks} == {"seq_contiguous", "prev_link", "payload_hash", "event_hash",
-                                            "payload_available"}
+    assert {c.name for c in rep.checks} == {
+        "seq_contiguous",
+        "prev_link",
+        "payload_hash",
+        "event_hash",
+        "payload_available",
+    }
     assert all(c.ok for c in rep.checks)
 
 
@@ -39,12 +44,15 @@ def test_empty_timeline_is_not_ok():
     assert not rep.ok and rep.events == 0
 
 
-@pytest.mark.parametrize("tamper,check", [
-    (lambda evs: evs.pop(2), "seq_contiguous"),
-    (lambda evs: setattr_copy(evs, 3, payload=b'{"x":2}'), "payload_hash"),
-    (lambda evs: setattr_copy(evs, 3, kind="annotation", actor="someone-else"), "event_hash"),
-    (lambda evs: setattr_copy(evs, 4, prev_hash=b"\x00" * 32), "prev_link"),
-])
+@pytest.mark.parametrize(
+    "tamper,check",
+    [
+        (lambda evs: evs.pop(2), "seq_contiguous"),
+        (lambda evs: setattr_copy(evs, 3, payload=b'{"x":2}'), "payload_hash"),
+        (lambda evs: setattr_copy(evs, 3, kind="annotation", actor="someone-else"), "event_hash"),
+        (lambda evs: setattr_copy(evs, 4, prev_hash=b"\x00" * 32), "prev_link"),
+    ],
+)
 def test_tamper_detected(tamper, check):
     evs = chain(5)
     tamper(evs)

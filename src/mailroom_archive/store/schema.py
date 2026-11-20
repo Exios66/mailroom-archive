@@ -19,8 +19,11 @@ Profile = Literal["single", "small", "full"]
 def render(keyspace: str, profile: Profile) -> list[str]:
     if not _KS.match(keyspace):
         raise ValueError(f"bad keyspace name: {keyspace!r}")
-    values = {"{ks}": keyspace, "{rf}": "1" if profile == "single" else "3",
-              "{timeline_compaction}": TIMELINE_COMPACTION}
+    values = {
+        "{ks}": keyspace,
+        "{rf}": "1" if profile == "single" else "3",
+        "{timeline_compaction}": TIMELINE_COMPACTION,
+    }
     out: list[str] = []
     for path in sorted(SCHEMA_DIR.glob("*.cql")):
         text = re.sub(r"--[^\n]*", "", path.read_text())

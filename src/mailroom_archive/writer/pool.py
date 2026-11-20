@@ -58,9 +58,18 @@ class _HeadCache:
 
 
 class ShardPool:
-    def __init__(self, store: Any, spool: Any | None, *, shards: int = 64, queue_size: int = 2000,
-                 blobs: Any | None = None, retry_delays: Sequence[float] = RETRY_DELAYS,
-                 health: Callable[[], Awaitable[bool]] | None = None, drain_interval: float = 1.0):
+    def __init__(
+        self,
+        store: Any,
+        spool: Any | None,
+        *,
+        shards: int = 64,
+        queue_size: int = 2000,
+        blobs: Any | None = None,
+        retry_delays: Sequence[float] = RETRY_DELAYS,
+        health: Callable[[], Awaitable[bool]] | None = None,
+        drain_interval: float = 1.0,
+    ):
         self.store, self.spool, self.blobs = store, spool, blobs
         self.health, self.drain_interval = health, drain_interval
         self.locks = [asyncio.Lock() for _ in range(shards)]
@@ -68,8 +77,8 @@ class ShardPool:
         self.queues = [asyncio.Queue[tuple[EventIn, asyncio.Future]](queue_size) for _ in range(shards)]
         self.caches = [_HeadCache() for _ in range(shards)]
         self.tasks: list[asyncio.Task] = []
-        self.retries = 0      # exported as archive_write_retries_total
-        self.conflicts = 0    # exported as archive_conflicts_total
+        self.retries = 0  # exported as archive_write_retries_total
+        self.conflicts = 0  # exported as archive_conflicts_total
 
     async def start(self) -> None:
         self.tasks = [asyncio.create_task(self._worker(i), name=f"shard-{i}") for i in range(self.shards)]
@@ -178,67 +187,121 @@ class ShardPool:
         return WriteResult(doc_id=ev.doc_id, status=status)
 
     async def _write_direct(self, shard: int, ev: EventIn) -> WriteResult:
-        mine: dict[str, IdemRecord] = {}   # the record this delivery planned, kept across retries
+        mine: dict[str, IdemRecord] = {}  # the record this delivery planned, kept across retries
         result, conflicts = await self._retrying(shard, ev.doc_id, lambda: self._write_one(shard, ev, mine))
         for c in conflicts:
             self.conflicts += 1
-            log.info("archive_conflict", doc_id=c.doc_id, shard=shard, source_ref=c.source_ref,
-                     field_path=c.payload["field_path"])
+            log.info(
+                "archive_conflict",
+                doc_id=c.doc_id,
+                shard=shard,
+                source_ref=c.source_ref,
+                field_path=c.payload["field_path"],
+            )
             await self._process(shard, c)
         return result
 
-    async def _write_one(self, shard: int, ev: EventIn,
-                         mine: dict[str, IdemRecord]) -> tuple[WriteResult, list[EventIn]]:
+    async def _write_one(
+        self, shard: int, ev: EventIn, mine: dict[str, IdemRecord]
+    ) -> tuple[WriteResult, list[EventIn]]:
         head = await self._head(shard, ev.doc_id)
         body = canonical_bytes(ev.payload)
         rec = await self.store.get_idem(ev.source, ev.source_ref)
         if rec is not None:
-            own = rec == mine.get("rec")   # our own earlier attempt, not an earlier delivery
+            own = rec == mine.get("rec")  # our own earlier attempt, not an earlier delivery
             conflicts: list[EventIn] = []
-            if rec.seq == head.seq + 1:   # idempotency row landed, Q8 did not: finish it
+            if rec.seq == head.seq + 1:  # idempotency row landed, Q8 did not: finish it
                 conflicts = await self._apply(shard, ev, head, body, rec, want_conflicts=True)
-            return WriteResult(doc_id=ev.doc_id, status="written" if own else "duplicate", seq=rec.seq,
-                               event_hash=rec.event_hash.hex()), conflicts if own else []
+            return WriteResult(
+                doc_id=ev.doc_id,
+                status="written" if own else "duplicate",
+                seq=rec.seq,
+                event_hash=rec.event_hash.hex(),
+            ), conflicts if own else []
         seq = head.seq + 1
         psha = sha256(body)
-        h = event_hash(doc_id=ev.doc_id, seq=seq, kind=str(ev.kind), occurred_us=ev.occurred_us,
-                       actor=ev.actor, source=ev.source, source_ref=ev.source_ref,
-                       payload_sha256=psha, prev_hash=head.hash)
-        rec = IdemRecord(doc_id=ev.doc_id, seq=seq, event_hash=h, event_id=new_event_id(),
-                         payload_sha256=psha, prev_hash=head.hash)
+        h = event_hash(
+            doc_id=ev.doc_id,
+            seq=seq,
+            kind=str(ev.kind),
+            occurred_us=ev.occurred_us,
+            actor=ev.actor,
+            source=ev.source,
+            source_ref=ev.source_ref,
+            payload_sha256=psha,
+            prev_hash=head.hash,
+        )
+        rec = IdemRecord(
+            doc_id=ev.doc_id,
+            seq=seq,
+            event_hash=h,
+            event_id=new_event_id(),
+            payload_sha256=psha,
+            prev_hash=head.hash,
+        )
         await self.store.put_idem(ev.source, ev.source_ref, rec)
         mine["rec"] = rec
         conflicts = await self._apply(shard, ev, head, body, rec, want_conflicts=True)
         return WriteResult(doc_id=ev.doc_id, status="written", seq=seq, event_hash=h.hex()), conflicts
 
-    async def _apply(self, shard: int, ev: EventIn, head: Head, body: bytes, rec: IdemRecord,
-                     want_conflicts: bool = False):
+    async def _apply(
+        self, shard: int, ev: EventIn, head: Head, body: bytes, rec: IdemRecord, want_conflicts: bool = False
+    ):
         upd, conflicts = plan_state(head, ev, rec.seq)
         payload, ref = spill_payload(body, self.blobs)
-        stored = StoredEvent(doc_id=ev.doc_id, seq=rec.seq, event_id=rec.event_id, kind=ev.kind,
-                             actor=ev.actor, source=ev.source, source_ref=ev.source_ref,
-                             occurred_us=ev.occurred_us, payload=payload, payload_ref=ref,
-                             payload_sha256=rec.payload_sha256, prev_hash=rec.prev_hash,
-                             event_hash=rec.event_hash, corrects_seq=ev.payload.get("corrects_seq"))
+        stored = StoredEvent(
+            doc_id=ev.doc_id,
+            seq=rec.seq,
+            event_id=rec.event_id,
+            kind=ev.kind,
+            actor=ev.actor,
+            source=ev.source,
+            source_ref=ev.source_ref,
+            occurred_us=ev.occurred_us,
+            payload=payload,
+            payload_ref=ref,
+            payload_sha256=rec.payload_sha256,
+            prev_hash=rec.prev_hash,
+            event_hash=rec.event_hash,
+            corrects_seq=ev.payload.get("corrects_seq"),
+        )
         await self.store.write_event(stored, upd)
         f = upd.fields
 
         def now(name: str):
             return f.get(name, getattr(head, name))
 
-        await self.store.write_feed(stored, shard16=feed_shard(ev.doc_id), channel=now("channel"),
-                                    doc_type=now("doc_type"), stage=now("stage"), sim_run_id=ev.sim_run_id)
+        await self.store.write_feed(
+            stored,
+            shard16=feed_shard(ev.doc_id),
+            channel=now("channel"),
+            doc_type=now("doc_type"),
+            stage=now("stage"),
+            sim_run_id=ev.sim_run_id,
+        )
         if head.matter_id is None and f.get("matter_id"):
-            await self.store.add_to_matter(f["matter_id"], ev.occurred_us, ev.doc_id, now("doc_type"),
-                                           now("content_sha256"))
-        new_head = head.replace(seq=rec.seq, hash=rec.event_hash,
-                                **{k: v for k, v in f.items() if k in _HEAD_FIELDS})
+            await self.store.add_to_matter(
+                f["matter_id"], ev.occurred_us, ev.doc_id, now("doc_type"), now("content_sha256")
+            )
+        new_head = head.replace(
+            seq=rec.seq, hash=rec.event_hash, **{k: v for k, v in f.items() if k in _HEAD_FIELDS}
+        )
         if "extracted_data" in f:
             new_head = new_head.replace(extracted_data=json.loads(f["extracted_data"]))
         self.caches[shard].put(ev.doc_id, new_head)
         return conflicts if want_conflicts else new_head
 
 
-_HEAD_FIELDS = frozenset({"matter_id", "doc_type", "doc_subclass", "stage", "content_sha256", "channel",
-                          "original_filename", "overrides", "audit_entry_hash"})
-
+_HEAD_FIELDS = frozenset(
+    {
+        "matter_id",
+        "doc_type",
+        "doc_subclass",
+        "stage",
+        "content_sha256",
+        "channel",
+        "original_filename",
+        "overrides",
+        "audit_entry_hash",
+    }
+)

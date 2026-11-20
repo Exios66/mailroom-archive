@@ -107,13 +107,25 @@ class _Planner:
             return
         archive_value = self.current(path)
         if value != archive_value:
-            self.extra.append(EventIn(
-                doc_id=self.ev.doc_id, kind=Kind.conflict, actor="archive", source="writer",
-                source_ref=f"conflict:{self.ev.source_ref}:{path}", occurred_us=self.ev.occurred_us,
-                payload={"field_path": path, "override_seq": self.overrides[path],
-                         "archive_value": archive_value, "pipeline_value": value,
-                         "pipeline_source_ref": self.ev.source_ref},
-                matter_id=None, sim_run_id=self.ev.sim_run_id))
+            self.extra.append(
+                EventIn(
+                    doc_id=self.ev.doc_id,
+                    kind=Kind.conflict,
+                    actor="archive",
+                    source="writer",
+                    source_ref=f"conflict:{self.ev.source_ref}:{path}",
+                    occurred_us=self.ev.occurred_us,
+                    payload={
+                        "field_path": path,
+                        "override_seq": self.overrides[path],
+                        "archive_value": archive_value,
+                        "pipeline_value": value,
+                        "pipeline_source_ref": self.ev.source_ref,
+                    },
+                    matter_id=None,
+                    sim_run_id=self.ev.sim_run_id,
+                )
+            )
 
     def finish(self) -> tuple[StateUpdate, list[EventIn]]:
         if self.extracted is not None:

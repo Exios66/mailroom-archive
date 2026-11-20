@@ -11,8 +11,16 @@ NO_WAIT = (0, 0, 0)
 
 
 def ev(doc_id, kind, payload=None, ref="r", **kw):
-    return EventIn(doc_id=doc_id, kind=kind, actor="a", source="s", source_ref=ref,
-                   occurred_us=1_763_650_000_000_000, payload=payload or {}, **kw)
+    return EventIn(
+        doc_id=doc_id,
+        kind=kind,
+        actor="a",
+        source="s",
+        source_ref=ref,
+        occurred_us=1_763_650_000_000_000,
+        payload=payload or {},
+        **kw,
+    )
 
 
 @pytest.fixture
@@ -55,7 +63,7 @@ async def test_duplicate_returns_original(pool):
 
 
 async def test_redelivery_after_crash_reissues_identical_write(pool, fake_store):
-    fake_store.fail_next("write_event", times=4)   # idem row written, every Q8 attempt lost
+    fake_store.fail_next("write_event", times=4)  # idem row written, every Q8 attempt lost
     with pytest.raises(StoreUnavailable):
         await pool.submit_batch([ev("d", "arrived", ref="x")])
     assert fake_store.timeline_sync("d") == []
@@ -78,9 +86,22 @@ async def test_transient_failure_is_retried(pool, fake_store):
 
 
 async def test_conflict_written_after_triggering_event(pool, fake_store):
-    await pool.submit_batch([ev("d", "correction", {"origin": "archive", "field_path": "doc_type",
-                                                    "new_value": "x", "reason": "r", "reviewer": "jb"},
-                                ref="c1")])
+    await pool.submit_batch(
+        [
+            ev(
+                "d",
+                "correction",
+                {
+                    "origin": "archive",
+                    "field_path": "doc_type",
+                    "new_value": "x",
+                    "reason": "r",
+                    "reviewer": "jb",
+                },
+                ref="c1",
+            )
+        ]
+    )
     await pool.submit_batch([ev("d", "stage_changed", {"to_stage": "archived", "doc_type": "y"}, ref="s1")])
     assert [e.kind for e in fake_store.timeline_sync("d")] == ["correction", "stage_changed", "conflict"]
 
@@ -100,8 +121,9 @@ async def test_backpressure_when_queue_full():
     await pool.start()
     try:
         with pytest.raises(Backpressure) as exc:
-            await asyncio.gather(*[pool.submit_batch([ev(f"d{i}", "arrived", ref=f"r{i}")])
-                                   for i in range(10)])
+            await asyncio.gather(
+                *[pool.submit_batch([ev(f"d{i}", "arrived", ref=f"r{i}")]) for i in range(10)]
+            )
         assert exc.value.retry_after > 0
     finally:
         await pool.stop()

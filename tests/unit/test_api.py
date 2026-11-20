@@ -188,3 +188,12 @@ def test_metrics_exposed(client):
         "archive_verify_failures_total",
     ):
         assert name in text
+
+
+def test_store_outage_on_read_is_503(tmp_path):
+    store = FakeStore()
+    store.fail_after_writes(0)
+    store._down = True
+    with make_client(tmp_path, ShardPool(store, None, shards=4, retry_delays=(0, 0, 0))) as c:
+        r = c.get("/v1/docs/d", headers=auth("read"))
+    assert r.status_code == 503 and r.headers["retry-after"] == "5"

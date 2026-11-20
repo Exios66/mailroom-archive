@@ -50,12 +50,20 @@ class FakeStore:
         if not st or "head_seq" not in st:
             return Head.empty()
         ed = st.get("extracted_data")
-        return Head(seq=st["head_seq"], hash=st["head_hash"], matter_id=st.get("matter_id"),
-                    doc_type=st.get("doc_type"), doc_subclass=st.get("doc_subclass"), stage=st.get("stage"),
-                    content_sha256=st.get("content_sha256"), channel=st.get("channel"),
-                    original_filename=st.get("original_filename"),
-                    extracted_data=json.loads(ed) if ed else None, overrides=dict(st.get("overrides") or {}),
-                    audit_entry_hash=st.get("audit_entry_hash"))
+        return Head(
+            seq=st["head_seq"],
+            hash=st["head_hash"],
+            matter_id=st.get("matter_id"),
+            doc_type=st.get("doc_type"),
+            doc_subclass=st.get("doc_subclass"),
+            stage=st.get("stage"),
+            content_sha256=st.get("content_sha256"),
+            channel=st.get("channel"),
+            original_filename=st.get("original_filename"),
+            extracted_data=json.loads(ed) if ed else None,
+            overrides=dict(st.get("overrides") or {}),
+            audit_entry_hash=st.get("audit_entry_hash"),
+        )
 
     async def write_event(self, ev: StoredEvent, upd: StateUpdate) -> None:
         self._maybe_fail("write_event")
@@ -79,8 +87,9 @@ class FakeStore:
         self._maybe_fail("put_idem")
         self.idem[(source, source_ref)] = rec
 
-    async def write_feed(self, ev: StoredEvent, *, shard16: int, channel, doc_type, stage,
-                         sim_run_id) -> None:
+    async def write_feed(
+        self, ev: StoredEvent, *, shard16: int, channel, doc_type, stage, sim_run_id
+    ) -> None:
         self._maybe_fail("write_feed")
         self.feed.append((shard16, ev))
 
