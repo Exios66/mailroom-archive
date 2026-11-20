@@ -2,6 +2,8 @@
 
 Per event: idempotency check, head (cache or Q1), sequence and hash, idempotency row, Q8,
 feed row, matter index, cache. Conflicts the event causes are written next, same shard.
+When Cassandra fails past the retries, the event goes to the spool unsequenced, and so does
+every later event for that shard until the drainer has replayed the spool (spec §7.4).
 """
 
 from __future__ import annotations
@@ -9,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from ..core.canonical import canonical_bytes
@@ -53,8 +55,11 @@ class _HeadCache:
 
 class ShardPool:
     def __init__(self, store: Any, spool: Any | None, *, shards: int = 64, queue_size: int = 2000,
-                 blobs: Any | None = None, retry_delays: Sequence[float] = RETRY_DELAYS):
+                 blobs: Any | None = None, retry_delays: Sequence[float] = RETRY_DELAYS,
+                 health: Callable[[], Awaitable[bool]] | None = None, drain_interval: float = 1.0):
         self.store, self.spool, self.blobs = store, spool, blobs
+        self.health, self.drain_interval = health, drain_interval
+        self.locks = [asyncio.Lock() for _ in range(shards)]
         self.shards, self.retry_delays = shards, tuple(retry_delays)
         self.queues = [asyncio.Queue[tuple[EventIn, asyncio.Future]](queue_size) for _ in range(shards)]
         self.caches = [_HeadCache() for _ in range(shards)]
@@ -62,12 +67,43 @@ class ShardPool:
 
     async def start(self) -> None:
         self.tasks = [asyncio.create_task(self._worker(i), name=f"shard-{i}") for i in range(self.shards)]
+        if self.spool is not None:
+            self.tasks.append(asyncio.create_task(self._drainer(), name="spool-drainer"))
 
     async def stop(self) -> None:
         for t in self.tasks:
             t.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         self.tasks = []
+
+    def shard(self, doc_id: str) -> int:
+        return shard_of(doc_id, self.shards)
+
+    async def wait_drained(self, timeout: float) -> None:
+        async with asyncio.timeout(timeout):
+            while self.spool is not None and self.spool.stats().events:
+                await asyncio.sleep(0.02)
+
+    async def _drainer(self) -> None:
+        while True:
+            await asyncio.sleep(self.drain_interval)
+            if self.health is not None and not await self.health():
+                continue
+            for shard in sorted(self.spool.pending_shards()):
+                async with self.locks[shard]:
+                    if not await self._drain_shard(shard):
+                        break
+
+    async def _drain_shard(self, shard: int) -> bool:
+        """Replay one shard's spool oldest first; False if Cassandra failed again."""
+        while batch := self.spool.peek(shard):
+            for spool_id, ev in batch:
+                try:
+                    await self._write_direct(shard, ev)
+                except StoreUnavailable:
+                    return False
+                self.spool.ack([spool_id])
+        return True
 
     async def submit_batch(self, events: list[EventIn]) -> list[WriteResult]:
         targets = [shard_of(e.doc_id, self.shards) for e in events]
@@ -91,7 +127,8 @@ class ShardPool:
         while True:
             ev, fut = await q.get()
             try:
-                result = await self._process(shard, ev)
+                async with self.locks[shard]:
+                    result = await self._process(shard, ev)
             except Exception as e:  # delivered to the caller, the shard keeps running
                 if not fut.done():
                     fut.set_exception(e)
@@ -119,15 +156,22 @@ class ShardPool:
         return h
 
     async def _process(self, shard: int, ev: EventIn) -> WriteResult:
-        mine: dict[str, IdemRecord] = {}   # the record this delivery planned, kept across retries
+        if self.spool is not None and self.spool.has_pending(shard):
+            return self._to_spool(shard, ev)
         try:
-            result, conflicts = await self._retrying(shard, ev.doc_id,
-                                                     lambda: self._write_one(shard, ev, mine))
+            return await self._write_direct(shard, ev)
         except StoreUnavailable:
             if self.spool is None:
                 raise
-            self.spool.append(shard, ev)
-            return WriteResult(doc_id=ev.doc_id, status="spooled")
+            return self._to_spool(shard, ev)
+
+    def _to_spool(self, shard: int, ev: EventIn) -> WriteResult:
+        status = "spooled" if self.spool.append(shard, ev) else "duplicate"
+        return WriteResult(doc_id=ev.doc_id, status=status)
+
+    async def _write_direct(self, shard: int, ev: EventIn) -> WriteResult:
+        mine: dict[str, IdemRecord] = {}   # the record this delivery planned, kept across retries
+        result, conflicts = await self._retrying(shard, ev.doc_id, lambda: self._write_one(shard, ev, mine))
         for c in conflicts:
             await self._process(shard, c)
         return result

@@ -21,11 +21,22 @@ class FakeStore:
         self.feed: list[tuple[int, StoredEvent]] = []
         self.matters: dict[str, list[dict]] = defaultdict(list)
         self._fail: dict[str, int] = {}
+        self._writes_left: int | None = None
+        self._down = False
+
+    def fail_after_writes(self, n: int) -> None:
+        """Let n more write_event calls succeed, then fail every call until recover()."""
+        self._writes_left = n
+
+    def recover(self) -> None:
+        self._writes_left, self._down = None, False
 
     def fail_next(self, method: str, times: int = 1) -> None:
         self._fail[method] = times
 
     def _maybe_fail(self, method: str) -> None:
+        if self._down:
+            raise StoreUnavailable("store down")
         if self._fail.get(method, 0) > 0:
             self._fail[method] -= 1
             raise StoreUnavailable(f"injected failure in {method}")
@@ -48,6 +59,11 @@ class FakeStore:
 
     async def write_event(self, ev: StoredEvent, upd: StateUpdate) -> None:
         self._maybe_fail("write_event")
+        if self._writes_left is not None:
+            if self._writes_left == 0:
+                self._down = True
+                raise StoreUnavailable("store down")
+            self._writes_left -= 1
         self.rows[ev.doc_id][ev.seq] = ev
         self.statics[ev.doc_id].update(upd.fields, head_seq=ev.seq, head_hash=ev.event_hash)
 
