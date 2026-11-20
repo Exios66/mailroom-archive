@@ -40,12 +40,16 @@ async def run(session: Session, stmt: Any, params: tuple | dict = ()) -> list[di
     except _DRIVER_OUTAGES as e:
         raise StoreUnavailable(str(e)) from e
 
-    def ok(page: list[dict]) -> None:
-        rows.extend(page)
-        if rf.has_more_pages:
-            rf.start_fetching_next_page()
-        else:
-            loop.call_soon_threadsafe(lambda: done.done() or done.set_result(rows))
+    def ok(page: list[dict] | None) -> None:
+        try:
+            rows.extend(page or ())   # writes return no rows
+            if rf.has_more_pages:
+                rf.start_fetching_next_page()
+                return
+        except Exception as e:  # never leave the awaiting coroutine hanging
+            err(e)
+            return
+        loop.call_soon_threadsafe(lambda: done.done() or done.set_result(rows))
 
     def err(exc: BaseException) -> None:
         loop.call_soon_threadsafe(lambda: done.done() or done.set_exception(exc))
