@@ -2,10 +2,13 @@
 
 A content-hash archive and ingest service for the mailroom document pipeline. It records every
 document's arrival, status history, traces and audit records in a replicated Cassandra store,
-keeps them hash-chained and verifiable, and exports them to Parquet for analysis. A built-in
-simulator drives it with high volumes of legal, insurance and corporate mail and filings.
+keeps them hash-chained and verifiable. The read-only SQLite follower retains original audit
+rows, later judge outcomes/rescores, attempts and observed catalog revisions. Parquet/DuckDB
+analytics and a load simulator are subsequent planned milestones.
 
 Design: [docs/superpowers/specs/2026-11-20-mailroom-archive-design.md](docs/superpowers/specs/2026-11-20-mailroom-archive-design.md)
+
+Current work: [SQL follower and outcome-retention plan](docs/superpowers/plans/2026-11-20-archive-following.md).
 
 ## Quick start
 
