@@ -48,6 +48,48 @@ uv run mailroom-archive verify doc <doc_id> --json
 The spool must be on persistent storage under `MAILROOM_ARCHIVE_DATA_DIR`. If it isn't,
 startup logs `archive_spool_ephemeral`.
 
+## Read-only SQLite follower
+
+Run the ingest API first, then run one follower for each pipeline database:
+
+```bash
+uv run mailroom-archive follow --sqlite /path/to/mailroom.db --name pipeline-main --once
+uv run mailroom-archive follow --sqlite /path/to/mailroom.db --name pipeline-main
+```
+
+The follower uses `MAILROOM_ARCHIVE_TOKEN` and `--archive-url` (default
+`http://127.0.0.1:8544`) to send events through the running API. It also needs Cassandra
+access for the existing `cursors` table. Its Cassandra settings/keyspace must match the API.
+It does not start another shard writer or modify the pipeline database.
+
+Choose a stable `--name`, unique for that source database, and keep it on restarts. It
+namespaces both event identities and checkpoints. Run only one follower with that name;
+checkpoint ownership/leases are not implemented. Replacing the source with a different
+database requires a different name. Do not routinely reset cursors or change names:
+idempotency retention is 90 days, as in the foundation design.
+
+Each pass reads pages of at most 500 rows and closes each source snapshot before network
+work. Checkpoints advance after every event from a source row is durably acknowledged,
+including an API spool acknowledgement. HTTP/storage errors leave unacknowledged work for
+replay. Continuous mode retries HTTP, SQL/storage and migration interruptions on its polling
+loop; `--once` exits unsuccessfully on an error. Malformed JSON, inconsistent parent/document
+identities and unsupported records stop the follower without skipping the source row.
+An individual event larger than the API's 4 MiB limit must be addressed before progress can
+continue; ordinary payload spilling over 16 KiB still happens in the archive writer.
+
+Initial audit rows and judge attempts are retained alongside later addenda, including
+rescores and resumed attempts. Each observed catalog revision includes the original fields
+under `payload.catalog_snapshot`; updates sharing a timestamp are distinguished by content.
+An unchanged stage observation is not a new transition, and fast intermediate states between
+polls can be missed. The source's timestamp representation must be consistent within each
+cursor column, as it is in the pipeline's SQLite writer. The ten minute overlap captures
+late updates within that window; older backdated changes require an explicit reconciliation.
+
+The CLI currently supports SQLite only. Arrival linking, trace sink integration, exact
+trace-derived transitions, upstream audit-hash verification and training-label exports are
+tracked in the [follow-on plan](superpowers/plans/2026-11-20-archive-following.md).
+`verify doc` checks the archive chain and payloads; it does not yet verify upstream audit hashes.
+
 ## Trust zone
 
 The archive holds full copies of what the pipeline sees: document bytes, senders, subjects

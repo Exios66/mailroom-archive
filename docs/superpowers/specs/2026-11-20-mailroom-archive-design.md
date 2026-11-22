@@ -234,7 +234,7 @@ or leveled), so a Scylla profile needs no application code changes (§10).
 | kind | Source | Payload (canonical JSON) |
 |---|---|---|
 | `arrived` | follower when it links an arrival (§6.4), simulator | `content_sha256, size_bytes, mime, channel, original_filename, sender, subject, received_at, intake_meta, blob_ref` |
-| `stage_changed` | follower (`documents`), simulator | `from_stage, to_stage, doc_type, doc_subclass, classification_confidence, extraction_confidence, escalation_reason, review_decision` |
+| `stage_changed` | follower (`documents`), simulator | `from_stage, to_stage, doc_type, doc_subclass, classification_confidence, extraction_confidence, escalation_reason, review_decision`; catalog observations also carry `observed: true, catalog_snapshot` |
 | `node_visit` | follower (row `detail.trace[]`), simulator | one visit record as in spec §4.4, without prompt/completion |
 | `trace_io` | ArchiveSink | `visit_id, io_sha256, io_ref` (bytes live in `trace_io`) |
 | `audit_row` | follower | the upstream unified row, verbatim |
@@ -701,14 +701,17 @@ needed:
 | `audit_log` (unified) | global `seq` | `audit_row`; a `node_visit` for each `detail.trace[]` entry; `stage_changed` for each stage transition the trace shows |
 | `audit_attempts` | none: read by `parent_id` when the parent row or `resumed` addendum is seen (they commit in the same transaction) | `audit_attempt` |
 | `audit_addenda` | `(timestamp, addendum_id)`, re-scanning the last 10 minutes each pass | `audit_addendum`, `correction` for review decisions with field diffs, `relation` for `relations_linked`; a `resumed` addendum's sub-rows are read by `parent_id` |
-| `documents` | `(updated_at, doc_id)`, re-scanning the last 10 minutes | `stage_changed` with `observed: true` when `stage` differs from the archive's static `stage`; links pending arrivals (§6.4) |
+| `documents` | `(updated_at, doc_id)`, re-scanning the last 10 minutes | `stage_changed` with `observed: true` and `catalog_snapshot` for each observed revision, preserving scores/provenance even when stage is unchanged; links pending arrivals (§6.4) |
 | `audit_log` before the unified migration, or `audit_log_legacy` after it | SQLite `rowid` (Postgres: `(timestamp, entry_id)` re-scanning the last 10 minutes) | `audit_row` with `legacy: true` |
 
-- **Which tables exist decides the mode.** The follower targets upstream `main` (unified audit
+- **The migration marker decides the mode.** The follower targets upstream `main` (unified audit
   row) and also supports 0.9.3 and other pre-migration databases. It reads `audit_meta`: when
   absent, the per-event `audit_log` is the legacy source; when present, the legacy source is
-  `audit_log_legacy` and `audit_log` holds unified rows. A migration seen mid-run (marker
-  appears) makes the follower finish the legacy cursor, then switch.
+  `audit_log_legacy` and `audit_log` holds unified rows. The `migration` key must exist;
+  table existence alone is insufficient because schema initialization creates `audit_meta`
+  before migration. A migration seen mid-run makes the follower replay the legacy copy
+  through a separate cursor before following unified rows. Legacy event identities remain
+  stable across the move, so changed copied rowids cannot skip or duplicate history.
 - **Stage history is approximate from polling.** Polling `documents` only sees the current
   stage, so fast moves (inbox → processing → classified within one poll) collapse. The exact
   sequence comes from the unified row's trace when it lands; until then, polled changes are
@@ -716,6 +719,10 @@ needed:
 - Poll every 1 second, 500 rows per query; cursor saved after the batch is acknowledged.
   At-least-once; overlap re-scans and the idempotency table make repeats harmless.
 - Lag metric: `archive_follower_lag_rows{source}` and `..._seconds`.
+
+Implementation progress and remaining work are tracked in
+[plan 2](../plans/2026-11-20-archive-following.md). Catalog observations are not proof of a
+stage transition; analytics should collapse unchanged stages and prefer trace evidence.
 
 ### 7.7 Inbox probe
 
